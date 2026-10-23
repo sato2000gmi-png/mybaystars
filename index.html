@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MY BAYSTARS カードID調査</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 12px; color: #222; }
+  h1 { font-size: 1.25rem; margin: 0 0 8px; }
+  p, small { line-height: 1.5; }
+  .controls { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 8px; margin: 12px 0; }
+  label { display: block; font-size: .9rem; }
+  input, select, button { box-sizing: border-box; width: 100%; padding: 9px; font: inherit; }
+  button { cursor: pointer; }
+  .wide { grid-column: 1 / -1; }
+  .actions { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 8px; margin: 8px 0; }
+  #status { padding: 8px; background: #f1f1f1; border-radius: 6px; margin: 8px 0; font-size: .9rem; }
+  #cards { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 10px; }
+  .card { border: 1px solid #ccc; border-radius: 7px; padding: 7px; min-width: 0; }
+  .card img { display: block; width: 100%; aspect-ratio: 3/4; object-fit: contain; background: #f4f4f4; cursor: pointer; }
+  .card .id { font-weight: 700; overflow-wrap: anywhere; margin: 5px 0; }
+  .card .state { font-size: .85rem; color: #555; min-height: 2.4em; }
+  .card input { margin-top: 5px; padding: 6px; font-size: .9rem; }
+  .card button { margin-top: 5px; padding: 6px; font-size: .9rem; }
+  .muted { color: #666; font-size: .85rem; }
+  dialog { width: min(92vw, 650px); border: 1px solid #aaa; border-radius: 8px; }
+  dialog img { max-width: 100%; max-height: 70vh; display: block; margin: auto; }
+  @media (min-width: 700px) { #cards { grid-template-columns: repeat(4, minmax(0,1fr)); } .controls { grid-template-columns: repeat(4, minmax(0,1fr)); } }
+</style>
+</head>
+<body>
+<h1>MY BAYSTARS カードID調査</h1>
+<p class="muted">指定したIDの画像を確認する簡易ツール。画像URLはMY BAYSTARSのCDNを参照します。大量の番号を一度に確認せず、まずは20〜100件程度で試してください。</p>
+
+<div class="controls">
+  <label>開始ID
+    <input id="startId" inputmode="numeric" value="25912000">
+  </label>
+  <label>件数
+    <select id="count">
+      <option value="20">20件</option>
+      <option value="50">50件</option>
+      <option value="100">100件</option>
+      <option value="200">200件</option>
+    </select>
+  </label>
+  <label>番号の間隔
+    <select id="step">
+      <option value="1">1ずつ</option>
+      <option value="10">10ずつ</option>
+      <option value="100">100ずつ</option>
+      <option value="1000">1000ずつ</option>
+    </select>
+  </label>
+  <label>画像パス
+    <select id="path">
+      <option value="old/frontimage">old/frontimage</option>
+    </select>
+  </label>
+  <div class="wide muted">現在は旧カード用の JPG URL（/cards/baystars/old/frontimage/ID.jpg）を確認します。</div>
+</div>
+<div class="actions">
+  <button id="loadBtn">一覧を表示</button>
+  <button id="saveBtn">調査結果を保存</button>
+  <button id="exportBtn">JSONを書き出す</button>
+  <button id="importBtn">JSONを読み込む</button>
+  <button id="clearBtn">端末内データを消去</button>
+  <input id="fileInput" type="file" accept=".json,application/json" hidden>
+</div>
+<div id="status" role="status">準備完了。開始IDと件数を選び「一覧を表示」を押してください。</div>
+<div id="cards"></div>
+
+<dialog id="viewer">
+  <p id="viewerId"></p>
+  <img id="viewerImg" alt="カード画像">
+  <p><a id="openOriginal" target="_blank" rel="noopener">元画像を別タブで開く</a></p>
+  <button id="closeViewer">閉じる</button>
+</dialog>
+
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const STORAGE_KEY = "mybaystars_card_id_research_v1";
+  let records = {};
+  let currentIds = [];
+  let pending = 0;
+
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (saved) records = JSON.parse(saved) || {};
+  } catch (_) {}
+
+  function urlFor(id) {
+    return `https://cdn.orical.jp/cards/baystars/old/frontimage/${id}.jpg`;
+  }
+  function setStatus(message) { $("status").textContent = message; }
+  function persist() {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
+      setStatus(`端末内に保存しました（${Object.keys(records).length}件）。`);
+    } catch (e) {
+      setStatus("端末内に保存できませんでした。JSONを書き出してバックアップしてください。");
+    }
+  }
+  function updateRecord(id, changes) {
+    records[id] = { ...(records[id] || { id, url: urlFor(id) }), ...changes, updatedAt: new Date().toISOString() };
+  }
+  function renderCard(id) {
+    const card = document.createElement("article");
+    card.className = "card";
+    card.dataset.id = id;
+
+    const img = document.createElement("img");
+    img.loading = "lazy";
+    img.alt = `カードID ${id}`;
+    img.src = urlFor(id);
+
+    const idEl = document.createElement("div");
+    idEl.className = "id";
+    idEl.textContent = id;
+
+    const state = document.createElement("div");
+    state.className = "state";
+    state.textContent = records[id]?.status === "image" ? "画像あり（前回確認）" :
+      records[id]?.status === "unconfirmed" ? "画像を確認できず（前回）" : "確認中…";
+
+    const name = document.createElement("input");
+    name.placeholder = "カード名・選手名";
+    name.setAttribute("aria-label", `${id}のカード名`);
+    name.value = records[id]?.note || "";
+
+    const noteBtn = document.createElement("button");
+    noteBtn.textContent = "メモを保存";
+    noteBtn.addEventListener("click", () => {
+      updateRecord(id, { note: name.value, url: urlFor(id) });
+      persist();
+    });
+
+    const openBtn = document.createElement("button");
+    openBtn.textContent = "元画像を開く";
+    openBtn.addEventListener("click", () => window.open(urlFor(id), "_blank", "noopener"));
+
+    img.addEventListener("load", () => {
+      state.textContent = "画像を表示できました";
+      updateRecord(id, { status: "image", url: urlFor(id) });
+      pending = Math.max(0, pending - 1);
+      setStatus(`画像確認中：残り ${pending} 件（画像ありは調査結果を保存で記録）`);
+    });
+    img.addEventListener("error", () => {
+      state.textContent = "画像を確認できず（不存在とは限りません）";
+      updateRecord(id, { status: "unconfirmed", url: urlFor(id) });
+      pending = Math.max(0, pending - 1);
+      setStatus(`画像確認中：残り ${pending} 件（画像ありは調査結果を保存で記録）`);
+    });
+    img.addEventListener("click", () => {
+      $("viewerId").textContent = `カードID: ${id}`;
+      $("viewerImg").src = urlFor(id);
+      $("openOriginal").href = urlFor(id);
+      $("viewer").showModal();
+    });
+
+    card.append(img, idEl, state, name, noteBtn, openBtn);
+    return card;
+  }
+
+  $("loadBtn").addEventListener("click", () => {
+    const start = $("startId").value.trim();
+    const count = Number($("count").value);
+    const step = Number($("step").value);
+    if (!/^\d+$/.test(start)) {
+      setStatus("開始IDは数字だけで入力してください。");
+      return;
+    }
+    const first = Number(start);
+    currentIds = Array.from({ length: count }, (_, i) => String(first + i * step));
+    $("cards").replaceChildren();
+    pending = currentIds.length;
+    currentIds.forEach(id => $("cards").appendChild(renderCard(id)));
+    setStatus(`${currentIds.length}件を表示しました。画像の読み込みが終わるまでお待ちください。`);
+  });
+
+  $("saveBtn").addEventListener("click", persist);
+
+  $("exportBtn").addEventListener("click", () => {
+    const blob = new Blob([JSON.stringify({ version: 1, exportedAt: new Date().toISOString(), records }, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "mybaystars-card-research.json";
+    a.click();
+    URL.revokeObjectURL(url);
+    setStatus(`${Object.keys(records).length}件の調査データを書き出しました。`);
+  });
+
+  $("importBtn").addEventListener("click", () => $("fileInput").click());
+  $("fileInput").addEventListener("change", async e => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const data = JSON.parse(await file.text());
+      const incoming = data.records || data;
+      if (!incoming || typeof incoming !== "object" || Array.isArray(incoming)) throw new Error("形式が違います");
+      records = { ...records, ...incoming };
+      persist();
+      setStatus(`読み込みました。現在 ${Object.keys(records).length}件。`);
+    } catch (_) {
+      setStatus("JSONを読み込めませんでした。正しい調査データファイルか確認してください。");
+    }
+    e.target.value = "";
+  });
+
+  $("clearBtn").addEventListener("click", () => {
+    if (!confirm("この端末に保存された調査データをすべて消去します。先にJSONを書き出しましたか？")) return;
+    records = {};
+    localStorage.removeItem(STORAGE_KEY);
+    setStatus("端末内の調査データを消去しました。");
+  });
+  $("closeViewer").addEventListener("click", () => $("viewer").close());
+})();
+</script>
+</body>
+</html>
